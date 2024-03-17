@@ -1,20 +1,29 @@
 use std::env;
 use std::io::{stdin, stdout, Write};
 use std::process::Command;
-static STATION: &str = "wlan0";
+
+#[derive(Debug)]
+struct Station {
+    name: String,
+    scanning: bool,
+}
 
 fn main() {
+    let stations = get_network_stations();
+    let station: &Station = stations.first().unwrap();
+
     let args: Vec<String> = env::args().collect();
     if args.len() > 1 {
-        if args[1] == "disconnect" {
-            Command::new("iwctl")
-                .arg("station")
-                .arg(STATION)
-                .arg("disconnect")
-                .output()
-                .expect("Error");
-        } else {
-            println!("That doesn't exsist")
+        match args[1].as_str() {
+            "disconnect" => {
+                Command::new("iwctl")
+                    .arg("station")
+                    .arg(station.name.clone())
+                    .arg("disconnect")
+                    .output()
+                    .expect("Error");
+            }
+            _ => {}
         }
     } else {
         connect_process();
@@ -22,7 +31,28 @@ fn main() {
 }
 
 fn connect_process() {
-    let networks = get_networks();
+    let binding = get_network_stations();
+    if binding.is_empty() {
+        return println!("No stations found");
+    }
+    let station: &Station = if binding.len() == 1 {
+        &binding[0]
+    } else {
+        for (i, station) in binding.iter().enumerate() {
+            println!("{}: {}", i, station.name);
+        }
+
+        let input = take_input("Select your station");
+        let number: usize = input.parse::<usize>().unwrap_or(0);
+        if number > binding.len() {
+            return println!("Not a station buddy");
+        }
+        &binding[number]
+    };
+    if !station.scanning {
+        start_scan(station)
+    }
+    let networks = get_networks(station);
     for (i, network) in networks.iter().enumerate() {
         println!("{}: {}", i, network);
     }
@@ -37,9 +67,9 @@ fn connect_process() {
     let is_protected = take_input("Is there a password? Y/n");
     if is_protected == "y" || is_protected == "Y" || is_protected.is_empty() {
         let password = take_input("Password");
-        connect_to_network(selected_network.clone(), Some(password));
+        connect_to_network(station, selected_network.clone(), Some(password));
     } else if is_protected == "n" || is_protected == "N" {
-        connect_to_network(selected_network.clone(), None);
+        connect_to_network(station, selected_network.clone(), None);
     }
 }
 
@@ -57,12 +87,12 @@ fn take_input(promt: &str) -> String {
     input
 }
 
-fn connect_to_network(network_ssid: String, passphrase: Option<String>) -> bool {
+fn connect_to_network(station: &Station, network_ssid: String, passphrase: Option<String>) -> bool {
     match &passphrase {
         Some(_string) => {
             let output = Command::new("iwctl")
                 .arg("station")
-                .arg(STATION)
+                .arg(station.name.clone())
                 .arg("connect")
                 .arg(network_ssid)
                 .arg("--passphrase")
@@ -78,7 +108,7 @@ fn connect_to_network(network_ssid: String, passphrase: Option<String>) -> bool 
         None => {
             let output = Command::new("iwctl")
                 .arg("station")
-                .arg(STATION)
+                .arg(station.name.clone())
                 .arg("connect")
                 .arg(network_ssid)
                 .output()
@@ -91,17 +121,11 @@ fn connect_to_network(network_ssid: String, passphrase: Option<String>) -> bool 
     }
 }
 
-fn get_networks() -> Vec<String> {
-    let _ = Command::new("iwctl")
-        .arg("station")
-        .arg("wlan0")
-        .arg("scan")
-        .status()
-        .expect("Error");
+fn get_networks(station: &Station) -> Vec<String> {
     let mut list: Vec<String> = vec![];
     let output = Command::new("iwctl")
         .arg("station")
-        .arg("wlan0")
+        .arg(station.name.clone())
         .arg("get-networks")
         .output()
         .expect("Failed");
@@ -131,4 +155,41 @@ fn get_networks() -> Vec<String> {
         list[i] = String::from(currentlist[0]);
     }
     list
+}
+
+fn get_network_stations() -> Vec<Station> {
+    let oputput = Command::new("iwctl")
+        .arg("station")
+        .arg("list")
+        .output()
+        .expect("Failed");
+
+    let text = String::from_utf8(oputput.stdout).unwrap();
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut list: Vec<Station> = vec![];
+    for (i, line) in lines.iter().enumerate() {
+        if line.len() < 26 {
+            continue;
+        }
+        let is_scanning: bool = line.contains("scanning");
+        if i < 4 {
+            continue;
+        }
+        let name = String::from(&line[6..20]);
+        list.push(Station {
+            name: name.trim().to_string(),
+            scanning: is_scanning,
+        });
+    }
+    list
+}
+
+fn start_scan(station: &Station) {
+    println!("Scanning");
+    let _ = Command::new("iwctl")
+        .arg("station")
+        .arg(station.name.clone())
+        .arg("scan")
+        .output()
+        .expect("Failed");
 }
